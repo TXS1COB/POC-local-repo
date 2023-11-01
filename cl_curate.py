@@ -1,6 +1,7 @@
 import pandas as pd
 import pandera as pa
 import pyarrow.parquet as pq
+import pyarrow as py
 from azure.storage.blob import BlobServiceClient
 import json
 
@@ -15,12 +16,12 @@ def validate_and_clean_data():
     parquet_file_name = "data_with_metadata.parquet"
 
     source_container_client = blob_service_client.get_container_client(source_container_name)
-    destination_container_client = blob_service_client.get_container_client(destination_container_name)
 
     blob_client = source_container_client.get_blob_client(parquet_file_name)
     blob_data = blob_client.download_blob()
-    df = pd.read_parquet(blob_data.readall())
-    
+    parquet_data = blob_data.readall()
+    table = pq.read_table(py.BufferReader(parquet_data))
+    df = table.to_pandas()
 
     # Define a customized schema for validation using pandera
     schema = pa.DataFrameSchema({
@@ -41,7 +42,6 @@ def validate_and_clean_data():
         'Name': pa.Column(str, checks=[pa.Check(lambda s: not any(c.isdigit() for c in s))])
     })
 
-    schema.validate(df)
     try:
         schema.validate(df)
     except pa.errors.SchemaError as e:
@@ -50,19 +50,16 @@ def validate_and_clean_data():
         #raise Exception("Data not according to needs") from e
 
     passed_df = df.drop(failed_df.index)
-    
+
     destination_blob_name = "curated_data.parquet"
-    table = pa.Table.from_pandas(passed_df)
+    table = py.Table.from_pandas(passed_df)
     pq.write_table(table, destination_blob_name)
-    #table_read = pq.read_table('curated_data.parquet')
-    #print(table_read)
     
+    destination_container_client = blob_service_client.get_container_client(destination_container_name)
     destination_blob_client = destination_container_client.get_blob_client(destination_blob_name)
-    with destination_blob_client.upload_blob(data=passed_df.to_parquet(), overwrite=True) as blob:
-        pass
 
-    passed_df.to_parquet("local_copy.parquet")
-if __name__ == "__main":
+    with open('curated_data.parquet', 'rb') as data:
+        destination_blob_client.upload_blob(data, overwrite=True)
+
+if __name__ == "__main__":
     validate_and_clean_data()
-
-
